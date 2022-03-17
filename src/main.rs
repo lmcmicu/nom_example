@@ -1,50 +1,96 @@
 use nom::{
     branch::alt,
-    bytes::complete::{is_not, tag},
-    character::complete::{alphanumeric1, char, digit1},
-    combinator::recognize,
-    sequence::{delimited, separated_pair},
+    bytes::complete::{take, take_until},
+    character::complete::{alphanumeric1},
     IResult,
+    error::{ErrorKind, ParseError},
+    Err::Error,
 };
 
-/*
- * Functions from the original simple basic examble
- */
-
-fn foo(s: &str) -> IResult<&str, &str> {
-    tag("foo")(s)
+#[derive(Debug, PartialEq)]
+pub enum CustomError<I> {
+  MyError,
+  Nom(I, ErrorKind),
 }
 
-fn bar(s: &str) -> IResult<&str, &str> {
-    tag("bar")(s)
+impl<I> ParseError<I> for CustomError<I> {
+  fn from_error_kind(input: I, kind: ErrorKind) -> Self {
+    CustomError::Nom(input, kind)
+  }
+
+  fn append(_: I, _: ErrorKind, other: Self) -> Self {
+    other
+  }
 }
 
-fn foo_bar(s: &str) -> IResult<&str, (&str, &str)> {
-    separated_pair(foo, char(' '), bar)(s)
+fn unquoted<'a>(quote_char: &'a char, input: &'a str) -> IResult<&'a str, String, CustomError<&'a str>> {
+    let quote_str = format!("{}", quote_char);
+
+    let result: IResult<&str, &str> = take(1 as u8)(input);
+    let (mut remainder, mut parsed_value) = result.as_ref().unwrap();
+    if *parsed_value != quote_str {
+        return Err(Error(CustomError::MyError));
+    }
+
+    let mut content = String::from("");
+    let mut start = true;
+    while remainder != "" {
+        let result: IResult<&str, &str> = take_until(quote_str.as_str())(remainder);
+        let result = result.as_ref().unwrap();
+        remainder = result.0;
+        parsed_value = result.1;
+        if !remainder.starts_with(quote_str.as_str()) {
+            return Err(Error(CustomError::MyError));
+        }
+        if start {
+            start = false;
+        } else {
+            content.push_str(quote_str.as_str());
+        }
+        content.push_str(parsed_value);
+        if remainder == format!("{}{}", quote_str, quote_str) {
+            content.push_str(quote_str.as_str());
+        }
+        remainder = remainder.trim_start_matches(quote_str.as_str());
+    }
+
+    Ok((remainder, content))
 }
 
-fn foo_bar_or_number(s: &str) -> IResult<&str, &str> {
-    alt((recognize(foo_bar), recognize(digit1)))(s)
+fn alphanum(input: &str) -> IResult<&str, String, CustomError<&str>> {
+    let foo: IResult<&str, &str> = alphanumeric1(input);
+    match foo {
+        Ok(boo) => {
+            let remainder = boo.0;
+            let content = boo.1;
+            return Ok((remainder, content.to_string()));
+        },
+        Err(_) => {
+            return Err(Error(CustomError::MyError));
+        }
+    };
 }
 
-/*
- * Functions to replicate the valve grammar
- */
+fn dqstring(input: &str) -> IResult<&str, String, CustomError<&str>> {
+    unquoted(&'"', &input)
+}
 
-fn label(input: &str) -> IResult<&str, &str> {
-    alt((
-        alphanumeric1,
-        delimited(char('"'), is_not("\""), char('"')),
-        delimited(char('\''), is_not("\'"), char('\'')),
-    ))(input)
+fn sqstring(input: &str) -> IResult<&str, String, CustomError<&str>> {
+    unquoted(&'\'', &input)
+}
+
+fn label(input: &str) -> IResult<&str, String, CustomError<&str>> {
+    alt((alphanum, dqstring, sqstring))(input)
 }
 
 fn main() {
-    // Tests from the original simple basic example
-    assert_eq!(foo_bar_or_number("foo bar"), Ok(("", "foo bar")));
-    assert_eq!(foo_bar_or_number("1234567"), Ok(("", "1234567")));
-    // Valve grammar tests
-    let submitted_string = "\'abc123\'";
-    let expected_string = "abc123";
+    let submitted_string = "\"\\\"abc123\\\"gronkiness\\\"ScoobyDoo!!\\\"joof\\\"\"";
+    let expected_string = String::from("\\\"abc123\\\"gronkiness\\\"ScoobyDoo!!\\\"joof\\\"");
+    assert_eq!(label(submitted_string), Ok(("", expected_string)));
+    let submitted_string = r"'abc123\'gronkiness\'ScoobyDoo!!'";
+    let expected_string = String::from(r"abc123\'gronkiness\'ScoobyDoo!!");
+    assert_eq!(label(submitted_string), Ok(("", expected_string)));
+    let submitted_string = "Belafonte";
+    let expected_string = String::from("Belafonte");
     assert_eq!(label(submitted_string), Ok(("", expected_string)));
 }
